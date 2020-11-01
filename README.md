@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://pkg.go.dev/fyne.io/fyne?tab=doc" title="Go API Reference" rel="nofollow"><img src="https://img.shields.io/badge/go-documentation-blue.svg?style=flat" alt="Go API Reference"></a>
-  <a href="https://github.com/fyne-io/fyne/releases/tag/v1.2.2" title="1.2.2 Release" rel="nofollow"><img src="https://img.shields.io/badge/version-1.2.2-blue.svg?style=flat" alt="1.2.2 release"></a>
+  <a href="https://github.com/fyne-io/fyne/releases/tag/v1.3.3" title="1.3.3 Release" rel="nofollow"><img src="https://img.shields.io/badge/version-1.3.3-blue.svg?style=flat" alt="1.3.3 release"></a>
   <a href='http://gophers.slack.com/messages/fyne'><img src='https://img.shields.io/badge/join-us%20on%20slack-gray.svg?longCache=true&logo=slack&colorB=blue' alt='Join us on Slack' /></a>
   <br />
   <a href="https://goreportcard.com/report/fyne.io/fyne"><img src="https://goreportcard.com/badge/fyne.io/fyne" alt="Code Status" /></a>
@@ -15,10 +15,10 @@
 It is designed to build applications that run on desktop and mobile devices with a
 single codebase.
 
-Version 1.2 is the current release which added support for iOS and Android devices
-as well as providing much simpler ways to write custom widgets.
-We are now working towards 1.3 which will add data binding and some more advanced
-widgets such as tables and lists.
+Version 1.3 is the current release - it introduced file dialogs, notifications and cross
+platform data management as well as the Accordion, TextGrid and SplitContainer widgets.
+We are now working towards [2.0](https://github.com/fyne-io/fyne/milestone/6)
+which aims to add data bindings, animations and more!
 
 # Prerequisites
 
@@ -61,18 +61,19 @@ Open a new file and you're ready to write your first app!
 package main
 
 import (
-	"fyne.io/fyne/widget"
 	"fyne.io/fyne/app"
+	"fyne.io/fyne/widget"
 )
 
 func main() {
-	app := app.New()
+	a := app.New()
+	w := a.NewWindow("Hello")
 
-	w := app.NewWindow("Hello")
+	hello := widget.NewLabel("Hello Fyne!")
 	w.SetContent(widget.NewVBox(
-		widget.NewLabel("Hello Fyne!"),
-		widget.NewButton("Quit", func() {
-			app.Quit()
+		hello,
+		widget.NewButton("Hi!", func() {
+			hello.SetText("Welcome :)")
 		}),
 	))
 
@@ -86,9 +87,15 @@ And you can run that simply as:
 
 It should look like this:
 
-<p align="center" markdown="1">
-  <img src="img/hello-normal.png" width="207" height="204" alt="Fyne Hello Dark Theme" />
-</p>
+<div align="center">
+  <table cellpadding="0" cellspacing="0" style="margin: auto; border-collapse: collapse;">
+    <tr style="border: none;"><td style="border: none;">
+      <img src="img/hello-light.png" width="207" height="204" alt="Fyne Hello Dark Theme" />
+    </td><td style="border: none;">
+      <img src="img/hello-dark.png" width="207" height="204" alt="Fyne Hello Dark Theme" />
+    </td></tr>
+  </table>
+</div>
 
 > Note that Windows applications load from a command prompt by default, which means if you click an icon you may see a command window.
 > To fix this add the parameters `-ldflags -H=windowsgui` to your run or build commands.

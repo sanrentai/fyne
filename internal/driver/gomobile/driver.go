@@ -1,37 +1,36 @@
 package gomobile
 
 import (
-	"fmt"
 	"runtime"
 	"strconv"
 	"time"
 
-	"fyne.io/fyne/internal"
-	"fyne.io/fyne/widget"
-	"golang.org/x/mobile/app"
-	"golang.org/x/mobile/event/key"
-	"golang.org/x/mobile/event/lifecycle"
-	"golang.org/x/mobile/event/paint"
-	"golang.org/x/mobile/event/size"
-	"golang.org/x/mobile/event/touch"
-	"golang.org/x/mobile/gl"
-
 	"fyne.io/fyne"
+	"fyne.io/fyne/canvas"
+	"fyne.io/fyne/internal"
 	"fyne.io/fyne/internal/driver"
 	"fyne.io/fyne/internal/painter"
 	pgl "fyne.io/fyne/internal/painter/gl"
 	"fyne.io/fyne/theme"
+	"fyne.io/fyne/widget"
+
+	"github.com/fyne-io/mobile/app"
+	"github.com/fyne-io/mobile/event/key"
+	"github.com/fyne-io/mobile/event/lifecycle"
+	"github.com/fyne-io/mobile/event/paint"
+	"github.com/fyne-io/mobile/event/size"
+	"github.com/fyne-io/mobile/event/touch"
+	"github.com/fyne-io/mobile/gl"
 )
 
 const tapSecondaryDelay = 300 * time.Millisecond
 
 type mobileDriver struct {
 	app   app.App
-	quit  bool
 	glctx gl.Context
 
 	windows []fyne.Window
-	device  fyne.Device
+	device  *device
 }
 
 // Declare conformity with Driver
@@ -42,10 +41,10 @@ func init() {
 }
 
 func (d *mobileDriver) CreateWindow(title string) fyne.Window {
-	canvas := NewCanvas().(*mobileCanvas) // silence lint
-	ret := &window{title: title, canvas: canvas, isChild: len(d.windows) > 0}
-	canvas.painter = pgl.NewPainter(canvas, ret)
-
+	c := NewCanvas().(*mobileCanvas) // silence lint
+	ret := &window{title: title, canvas: c, isChild: len(d.windows) > 0}
+	c.content = &canvas.Rectangle{FillColor: theme.BackgroundColor()}
+	c.painter = pgl.NewPainter(c, ret)
 	d.windows = append(d.windows, ret)
 	return ret
 }
@@ -72,32 +71,22 @@ func (d *mobileDriver) CanvasForObject(fyne.CanvasObject) fyne.Canvas {
 		return nil
 	}
 
-	// TODO don't just assume it refers to the topmost window
+	// TODO figure out how we handle multiple windows...
 	return d.currentWindow().Canvas()
 }
 
 func (d *mobileDriver) AbsolutePositionForObject(co fyne.CanvasObject) fyne.Position {
-	var pos fyne.Position
-	c := fyne.CurrentApp().Driver().CanvasForObject(co).(*mobileCanvas)
+	c := d.CanvasForObject(co)
+	if c == nil {
+		return fyne.NewPos(0, 0)
+	}
 
-	c.walkTree(func(o fyne.CanvasObject, p fyne.Position, _ fyne.Position, _ fyne.Size) bool {
-		if o == co {
-			pos = p
-			return true
-		}
-		return false
-	}, nil)
-
-	return pos
+	mc := c.(*mobileCanvas)
+	return driver.AbsolutePositionForObject(co, mc.objectTrees())
 }
 
 func (d *mobileDriver) Quit() {
-	if d.app == nil {
-		return
-	}
-
-	// TODO should this be disabled for iOS?
-	d.quit = true
+	// Android and iOS guidelines say this should not be allowed!
 }
 
 func (d *mobileDriver) Run() {
@@ -118,16 +107,32 @@ func (d *mobileDriver) Run() {
 				case lifecycle.CrossOn:
 					d.glctx, _ = e.DrawContext.(gl.Context)
 					d.onStart()
+
+					// this is a fix for some android phone to prevent the app from being drawn as a blank screen after being pushed in the background
+					canvas.Content().Refresh()
+
 					a.Send(paint.Event{})
 				case lifecycle.CrossOff:
 					d.onStop()
 					d.glctx = nil
 				}
-				if e.Crosses(lifecycle.StageAlive) == lifecycle.CrossOff {
-					d.quit = true
-				}
 			case size.Event:
+				if e.WidthPx <= 0 {
+					continue
+				}
 				currentSize = e
+				currentOrientation = e.Orientation
+				currentDPI = e.PixelsPerPt * 72
+
+				dev := d.device
+				dev.insetTop = e.InsetTopPx
+				dev.insetBottom = e.InsetBottomPx
+				dev.insetLeft = e.InsetLeftPx
+				dev.insetRight = e.InsetRightPx
+				canvas.SetScale(0) // value is ignored
+
+				// make sure that we paint on the next frame
+				canvas.Content().Refresh()
 			case paint.Event:
 				if d.glctx == nil || e.External {
 					continue
@@ -138,13 +143,18 @@ func (d *mobileDriver) Run() {
 				}
 
 				if d.freeDirtyTextures(canvas) {
-					d.paintWindow(current, currentSize)
-					a.Publish()
+					newSize := fyne.NewSize(int(float32(currentSize.WidthPx)/canvas.scale), int(float32(currentSize.HeightPx)/canvas.scale))
 
-					err := d.glctx.GetError()
-					if err != 0 {
-						fyne.LogError(fmt.Sprintf("OpenGL Error: %d", err), nil)
+					if canvas.minSizeChanged() {
+						canvas.ensureMinSize()
+
+						canvas.sizeContent(newSize) // force resize of content
+					} else { // if screen changed
+						current.Resize(newSize)
 					}
+
+					d.paintWindow(current, newSize)
+					a.Publish()
 				}
 
 				time.Sleep(time.Millisecond * 10)
@@ -165,10 +175,6 @@ func (d *mobileDriver) Run() {
 					d.typeUpCanvas(canvas, e.Rune, e.Code)
 				}
 			}
-
-			if d.quit {
-				break
-			}
 		}
 	})
 }
@@ -179,17 +185,13 @@ func (d *mobileDriver) onStart() {
 func (d *mobileDriver) onStop() {
 }
 
-func (d *mobileDriver) paintWindow(window fyne.Window, sz size.Event) {
+func (d *mobileDriver) paintWindow(window fyne.Window, size fyne.Size) {
 	canvas := window.Canvas().(*mobileCanvas)
-	currentOrientation = sz.Orientation
 
 	r, g, b, a := theme.BackgroundColor().RGBA()
 	max16bit := float32(255 * 255)
 	d.glctx.ClearColor(float32(r)/max16bit, float32(g)/max16bit, float32(b)/max16bit, float32(a)/max16bit)
 	d.glctx.Clear(gl.COLOR_BUFFER_BIT)
-
-	newSize := fyne.NewSize(int(float32(sz.WidthPx)/canvas.scale), int(float32(sz.HeightPx)/canvas.scale))
-	window.Resize(newSize)
 
 	paint := func(obj fyne.CanvasObject, pos fyne.Position, _ fyne.Position, _ fyne.Size) bool {
 		// TODO should this be somehow not scroll container specific?
@@ -199,7 +201,7 @@ func (d *mobileDriver) paintWindow(window fyne.Window, sz size.Event) {
 				obj.Size(),
 			)
 		}
-		canvas.painter.Paint(obj, pos, newSize)
+		canvas.painter.Paint(obj, pos, size)
 		return false
 	}
 	afterPaint := func(obj, _ fyne.CanvasObject) {
@@ -236,7 +238,7 @@ func (d *mobileDriver) tapUpCanvas(canvas *mobileCanvas, x, y float32, tapID tou
 
 	canvas.tapUp(pos, int(tapID), func(wid fyne.Tappable, ev *fyne.PointEvent) {
 		go wid.Tapped(ev)
-	}, func(wid fyne.Tappable, ev *fyne.PointEvent) {
+	}, func(wid fyne.SecondaryTappable, ev *fyne.PointEvent) {
 		go wid.TappedSecondary(ev)
 	}, func(wid fyne.Draggable, ev *fyne.DragEvent) {
 		go wid.DragEnd()
@@ -332,6 +334,7 @@ var keyCodeMap = map[key.Code]fyne.KeyName{
 	key.CodeLeftSquareBracket:  fyne.KeyLeftBracket,
 	key.CodeBackslash:          fyne.KeyBackslash,
 	key.CodeRightSquareBracket: fyne.KeyRightBracket,
+	key.CodeGraveAccent:        fyne.KeyBackTick,
 }
 
 func keyToName(code key.Code) fyne.KeyName {
